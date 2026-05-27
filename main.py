@@ -97,32 +97,31 @@ def get_true_reading(t, mode, offset, amplitude, omega, gradient=0.0, phase=0.0,
             z = 1e-6  # Clamp to a near-zero positive value
             a = 0.0   # Acceleration stops
     elif mode == "DRONE_LANDING":
-        # Atterraggio aggressivo: Picchiata veloce e frenata d'emergenza
         if t < 2.0:
-            # Fase 1: Hovering tranquillo a 20m
+            # Fase 1: Homing
             z = offset
             a = 0.0
         elif t < 3.0:
-            # Fase 2: Inizio picchiata (I motori rallentano di colpo)
+            # Fase 2: Inizio picchiata 
             dt_m = t - 2.0
-            a = -4.0 # Accelerazione molto forte verso il basso!
+            a = -4.0 
             z = offset + 0.5 * a * (dt_m**2)
         elif t < 7.0:
             # Fase 3: Caduta libera controllata
             dt_m = t - 3.0
-            z_start = offset - 2.0  # Si trova a 18 metri
-            v_cruise = -4.0         # Scende a 4 metri al secondo
-            a = 0.0                 # Velocità costante, accelerazione 0
+            z_start = offset - 2.0  
+            v_cruise = -4.0         
+            a = 0.0                 
             z = z_start + v_cruise * dt_m
         elif t < 8.0:
-            # Fase 4: Hard Brake (Frenata brusca a 2 metri dal suolo)
+            # Fase 4: Hard Brake 
             dt_m = t - 7.0
             z_start = 2.0           # A 2 metri accende i motori al massimo
             v_cruise = -4.0
             a = 4.0                 # Strappo di 4 m/s^2 verso l'alto per frenare
             z = z_start + v_cruise * dt_m + 0.5 * a * (dt_m**2)
         else:
-            # Fase 5: Drone a terra (Salvo!)
+            # Fase 5: Drone a terra
             z = 0.0
             a = 0.0
 
