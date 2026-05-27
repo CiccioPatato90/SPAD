@@ -47,7 +47,7 @@ dt      = 1.0 / tick_hz
 GRAVITY = 9.81 # m/s^2
 C_LIGHT = 2.25e8 # speed of light in water [m/s]
 
-spad_interval = int(tick_hz/7)
+spad_interval = int(tick_hz/0.7)
 SPAD_DEFAULT_PARAMS = dict(
     T_HO           = 10e-9,
     PDP            = 0.30,
