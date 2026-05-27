@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import os
 
 # Safely import the custom SPAD model, or mock it if missing
 try:
@@ -17,8 +18,9 @@ total_ticks = int(sim_time * tick_hz)
 
 GRAVITY = 9.81 # m/s^2
 
-# C_LIGHT = 3e8   # speed of light [m/s]
-C_LIGHT = 2.25e8 # speed of light in water [m/s]
+# Cambio la velocità della luce, visto che voglio lavorare fuori dall'acqua
+C_LIGHT = 3e8   # speed of light [m/s]
+# C_LIGHT = 2.25e8 # speed of light in water [m/s]
 
 
 spad_interval = int(tick_hz/7)
@@ -94,7 +96,39 @@ def get_true_reading(t, mode, offset, amplitude, omega, gradient=0.0, phase=0.0,
         if z <= 0.0:
             z = 1e-6  # Clamp to a near-zero positive value
             a = 0.0   # Acceleration stops
+    elif mode == "DRONE_LANDING":
+        # Atterraggio aggressivo: Picchiata veloce e frenata d'emergenza
+        if t < 2.0:
+            # Fase 1: Hovering tranquillo a 20m
+            z = offset
+            a = 0.0
+        elif t < 3.0:
+            # Fase 2: Inizio picchiata (I motori rallentano di colpo)
+            dt_m = t - 2.0
+            a = -4.0 # Accelerazione molto forte verso il basso!
+            z = offset + 0.5 * a * (dt_m**2)
+        elif t < 7.0:
+            # Fase 3: Caduta libera controllata
+            dt_m = t - 3.0
+            z_start = offset - 2.0  # Si trova a 18 metri
+            v_cruise = -4.0         # Scende a 4 metri al secondo
+            a = 0.0                 # Velocità costante, accelerazione 0
+            z = z_start + v_cruise * dt_m
+        elif t < 8.0:
+            # Fase 4: Hard Brake (Frenata brusca a 2 metri dal suolo)
+            dt_m = t - 7.0
+            z_start = 2.0           # A 2 metri accende i motori al massimo
+            v_cruise = -4.0
+            a = 4.0                 # Strappo di 4 m/s^2 verso l'alto per frenare
+            z = z_start + v_cruise * dt_m + 0.5 * a * (dt_m**2)
+        else:
+            # Fase 5: Drone a terra (Salvo!)
+            z = 0.0
+            a = 0.0
 
+        if z < 0.0:
+            z = 0.0
+            a = 0.0
     else:
         raise ValueError(f"Unknown flight profile mode: {mode}")
 
@@ -163,7 +197,7 @@ def main():
         # ==========================================
         # STEP A: SOURCE OF TRUTH
         # ==========================================
-        true_z, true_a = get_true_reading(t, "UW", offset, amplitude, omega, -1.5)
+        true_z, true_a = get_true_reading(t, "DRONE_LANDING", offset, amplitude, omega)
         t_history.append(t)
         true_z_history.append(true_z)
         true_a_history.append(true_a)
@@ -258,7 +292,7 @@ def main():
     plt.tight_layout()
     plt.savefig('low.png', dpi=150)
     print("Plot saved to output.png")
-    plt.show()
+    os.startfile('low.png')  # Windows only
 
 if __name__ == "__main__":
     main()
