@@ -36,10 +36,10 @@ accel_interval = int(tick_hz / 100)
 # 3. CORE DEL FILTRO DI KALMAN (COMPILATO CON NUMBA)
 # ==========================================
 @njit
-def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, accel_interval, accel_bias, v):
+def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, accel_interval, accel_bias, var_accel_process):
     """
     Ciclo EKF compilato in C tramite Numba per massime prestazioni.
-    Sostituisce il lentissimo loop Python puro.
+    Riceve il bias e la varianza di processo scalati per la specifica run.
     """
     # Inizializzazione Stato e Covarianza
     X = np.array([[true_z_array[0]], [0.0], [0.0]])
@@ -49,9 +49,7 @@ def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, ac
                   [0.0, 1.0, dt], 
                   [0.0, 0.0, 1.0]])
 
-    # La varianza di processo (Q) scala con la velocità per assorbire meglio 
-    # le variazioni brusche del fondale ad alte velocità.
-    var_accel_process = 0.2 * max(1.0, v)
+    # Matrice Q che riceve il parametro adattivo dal ciclo esterno
     Q = np.array([[0.1, 0.0, 0.0],
                   [0.0, var_accel_process * dt**2, var_accel_process * dt],
                   [0.0, var_accel_process * dt, var_accel_process]])
@@ -84,7 +82,6 @@ def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, ac
 
         if has_spad or has_accel:
             if has_spad and has_accel:
-                # Misurazioni simulate (rumore aggiunto in-place per performance)
                 z_spad = true_z + np.random.normal(0.0, 0.05)
                 z_acc = true_a + np.random.normal(0.0, 0.015) + accel_bias
                 Z = np.array([[z_spad], [z_acc]])
@@ -126,7 +123,7 @@ def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, ac
 def main():
     load_bathymetry_data('profilo_geometrico.csv')
 
-    v_vec = np.linspace(1.0, 20.0, 50) # Espanso a 50 velocità per testare la performance
+    v_vec = np.linspace(1.0, 500, 200) 
     distance = 10170.97
     rmse = np.zeros(len(v_vec))
 
@@ -137,24 +134,22 @@ def main():
         sim_time = distance / v
         total_ticks = int(sim_time * tick_hz)
         
-        # Corretto n_spad a intero
         n_spad = int(sim_time * SPAD_FREQ_HZ)
         spad_interval = max(1, int(total_ticks / n_spad)) if n_spad > 0 else total_ticks
         
-        # Il bias accelerometrico ora cambia ad ogni simulazione per maggiore realismo
+        # CORREZIONE 1: Il bias accelerometrico viene rinnovato ad ogni iterazione
         accel_bias = np.random.normal(0, 0.03)
 
         t_array = np.arange(total_ticks) * dt
         s_array = v * t_array
         true_z_array = interp_z(s_array)
 
-        # Derivate numeriche per velocità e accelerazione
         true_vz_array = np.gradient(true_z_array, dt)
         true_a_array_raw = np.gradient(true_vz_array, dt)
 
-        # Filtraggio passa-basso scalato dinamicamente con la velocità
-        # Per v elevate, tau diminuisce in modo da rispondere più rapidamente ai cambi di gradiente
-        tau = 0.6 / max(1.0, v * 0.1) 
+        # CORREZIONE 2: Filtraggio passa-basso scalato dinamicamente (tau proporzionale a v)
+        # Più il drone è veloce, minore è l'inerzia temporale (con un limite inferiore di stabilità a 0.05)
+        tau = max(0.05, 0.6 / v)
         alpha = dt / (tau + dt)
         
         true_a_filtered = np.zeros(total_ticks)
@@ -163,6 +158,10 @@ def main():
             true_a_filtered[k] = alpha * true_a_array_raw[k] + (1 - alpha) * true_a_filtered[k-1]
 
         true_a_array = true_a_filtered
+
+        # CORREZIONE 3: La varianza di processo di accelerazione (Q) scala con la velocità
+        v_ref = 2.0  # velocità nominale
+        var_accel_process = 0.2 * (v / v_ref)
 
         # Esecuzione dell'EKF ottimizzato
         res_z_history = run_ekf_numba(
@@ -173,10 +172,9 @@ def main():
             spad_interval, 
             accel_interval, 
             accel_bias,
-            v
+            var_accel_process  # Parametro adattivo passato al filtro
         )
 
-        # Calcolo RMSE
         rmse_current_sim = np.sqrt(np.mean((true_z_array - res_z_history)**2))
         rmse[i] = rmse_current_sim
         
