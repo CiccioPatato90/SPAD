@@ -1,297 +1,198 @@
 import numpy as np
-import math
 import matplotlib.pyplot as plt
-import os
+import pandas as pd
+from scipy.interpolate import interp1d
+from numba import njit
 
-# Safely import the custom SPAD model, or mock it if missing
-try:
-    from spad_model import spad_measure
-except ImportError:
-    print("Warning: spad_model not found. Using simulated SPAD noise.")
-    def spad_measure(true_z, params):
-        return true_z + np.random.normal(0, 0.05)
+# ==========================================
+# 1. CARICAMENTO DATI BATIMETRICI (CSV)
+# ==========================================
+interp_z = None
+total_distance = 0.0
 
+def load_bathymetry_data(filename='profilo_geometrico.csv'):
+    global interp_z, total_distance
+    try:
+        df = pd.read_csv(filename)
+        s = df['Distance'].values        # asse spaziale [m]
+        z = df['Z_AUV'].values           # quota drone [m]
+        total_distance = s[-1]
+        interp_z = interp1d(s, z, kind='linear',
+                            fill_value=(z[0], z[-1]),
+                            bounds_error=False)
+        print(f"Profilo geometrico caricato. Distanza totale: {total_distance:.2f} m")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"ERRORE: File '{filename}' non trovato. Assicurati di aver eseguito lo script MATLAB.")
+
+# ==========================================
+# 2. COSTANTI E CONFIGURAZIONE
+# ==========================================
 tick_hz = 700
-dt      = 1.0 / tick_hz
-sim_time = 20.0
-total_ticks = int(sim_time * tick_hz)
+dt = 1.0 / tick_hz
+SPAD_FREQ_HZ = 0.7  # Hz
+accel_interval = int(tick_hz / 100)
 
-GRAVITY = 9.81 # m/s^2
-
-# Cambio la velocità della luce, visto che voglio lavorare fuori dall'acqua
-C_LIGHT = 3e8   # speed of light [m/s]
-# C_LIGHT = 2.25e8 # speed of light in water [m/s]
-
-
-spad_interval = int(tick_hz/7)
-SPAD_DEFAULT_PARAMS = dict(
-    T_HO           = 10e-9,
-    PDP            = 0.30,
-    DCR            = 1e3,
-    N_pulses       = 600,
-    T_window       = 800e-9,
-    dt_bin         = 100e-12,
-    lambda_sig_0   = 10000,
-    pulse_sigma_s  = 0.42e-9,
-    lambda_bg_rate = 20e6,
-)
-
-# see section 3.9 of datasheet for sampling rate
-baro_interval = int(tick_hz/27)
-def get_baro_reading(true_altitude):
-    white_noise = np.random.normal(0, 0.11)
-    BARO_FIXED_BIAS = np.random.normal(0, 0.66)
-    raw_imu = true_altitude + white_noise + BARO_FIXED_BIAS
-    return raw_imu
-
-def get_true_reading(t, mode, offset, amplitude, omega, gradient=0.0, phase=0.0,t_turn=10.0, gradient2=-0.5):
-    if mode == "SIN":
-        z = offset + amplitude * math.sin(omega * t)
-        a = -amplitude * (omega**2) * math.sin(omega * t)
-
-    elif mode == "MSIN":
-        amp2 = amplitude * 0.33
-        omega2 = omega * 2.4
-        z = offset + amplitude * math.sin(omega * t) + amp2 * math.cos(omega2 * t)
-        a = -amplitude * (omega**2) * math.sin(omega * t) - amp2 * (omega2**2) * math.cos(omega2 * t)
-
-    elif mode == "DIP":
-        t0 = 20.0
-        sigma = 2.0
-        dt_maneuver = t - t0
-        exp_term = math.exp(-(dt_maneuver**2) / (2 * sigma**2))
-        z = offset - amplitude * exp_term
-        a = (amplitude / sigma**2) * exp_term * (1.0 - (dt_maneuver**2) / sigma**2)
-
-    elif mode == "UW":
-        # 1. Calculate the theoretical trajectory
-        z = (offset + gradient * t) + amplitude * math.sin(omega * t + phase)
-        a = -amplitude * (omega**2) * math.sin(omega * t + phase)
-
-        # 2. BOUNDARY CHECK: Prevent negative distance
-        # A negative z means the sensor has crashed into the seabed.
-        # This prevents the ToF (2 * z / C_LIGHT) from becoming negative and crashing the SPAD histogram array.
-        if z <= 0.0:
-            z = 1e-6  # Clamp to a near-zero positive value (1 micrometer)
-            a = 0.0   # Acceleration stops because the vehicle/target cannot move further down
-    elif mode == "UW2":
-        # 1. Calculate the base trend (the seabed ridge)
-        if t <= t_turn:
-            # First leg: going up
-            base_z = offset + gradient * t
-        else:
-            # Second leg: going down.
-            # We must start at the exact height the first leg finished at to prevent a gap.
-            peak_z = offset + gradient * t_turn
-            base_z = peak_z + gradient2 * (t - t_turn)
-
-        # 2. Add the seabed ripples (sine wave)
-        z = base_z + amplitude * math.sin(omega * t + phase)
-
-        # 3. Calculate acceleration
-        # The second derivative of straight lines is 0, so 'a' only depends on the sine wave.
-        a = -amplitude * (omega**2) * math.sin(omega * t + phase)
-
-        # 4. BOUNDARY CHECK: Prevent negative distance (crashing into seabed)
-        if z <= 0.0:
-            z = 1e-6  # Clamp to a near-zero positive value
-            a = 0.0   # Acceleration stops
-    elif mode == "DRONE_LANDING":
-        if t < 2.0:
-            # Fase 1: Homing
-            z = offset
-            a = 0.0
-        elif t < 3.0:
-            # Fase 2: Inizio picchiata 
-            dt_m = t - 2.0
-            a = -4.0 
-            z = offset + 0.5 * a * (dt_m**2)
-        elif t < 7.0:
-            # Fase 3: Caduta libera controllata
-            dt_m = t - 3.0
-            z_start = offset - 2.0  
-            v_cruise = -4.0         
-            a = 0.0                 
-            z = z_start + v_cruise * dt_m
-        elif t < 8.0:
-            # Fase 4: Hard Brake 
-            dt_m = t - 7.0
-            z_start = 2.0           # A 2 metri accende i motori al massimo
-            v_cruise = -4.0
-            a = 4.0                 # Strappo di 4 m/s^2 verso l'alto per frenare
-            z = z_start + v_cruise * dt_m + 0.5 * a * (dt_m**2)
-        else:
-            # Fase 5: Drone a terra
-            z = 0.0
-            a = 0.0
-
-        if z < 0.0:
-            z = 0.0
-            a = 0.0
-    else:
-        raise ValueError(f"Unknown flight profile mode: {mode}")
-
-    return z, a
-
-accel_interval = int(tick_hz/100)
-def get_acc_reading(true_a):
-    white_noise = np.random.normal(0, 0.015)
-    ACCEL_FIXED_BIAS = np.random.normal(0, 0.2)
-    return true_a + white_noise + ACCEL_FIXED_BIAS
-
-
-def main():
-    # --- 1. Initialize Data Storage Arrays ---
-    t_history = []
-    true_z_history = []
-    true_a_history = []
-
-    accel_history = []
-    accel_t_history = []
-
-    spad_history = []
-    spad_t_history = []
-
-    measure_t_history = []
-    res_z_history = []
-    res_v_history = []
-    res_a_history = []
-
-    # Simulation parameters
-    offset      = 20.0
-    amplitude   = 2
-    omega = 1.0 # Lowered slightly for cleaner visual plots
-    max_range  = offset + amplitude + 5.0
-    spad_params = {**SPAD_DEFAULT_PARAMS,
-                   'T_window': 2.0 * max_range / C_LIGHT}
-
-    # --- State Initialization ---
-    # State Vector X = [z, v, a]^T
-    X = np.array([[offset],
-                  [0.0],
-                  [0.0]])
-
-    # Initial Covariance (P) - High uncertainty at the start
+# ==========================================
+# 3. CORE DEL FILTRO DI KALMAN (COMPILATO CON NUMBA)
+# ==========================================
+@njit
+def run_ekf_numba(total_ticks, true_z_array, true_a_array, dt, spad_interval, accel_interval, accel_bias, v):
+    """
+    Ciclo EKF compilato in C tramite Numba per massime prestazioni.
+    Sostituisce il lentissimo loop Python puro.
+    """
+    # Inizializzazione Stato e Covarianza
+    X = np.array([[true_z_array[0]], [0.0], [0.0]])
     P = np.eye(3) * 100.0
+    
+    F = np.array([[1.0, dt, 0.5 * dt**2], 
+                  [0.0, 1.0, dt], 
+                  [0.0, 0.0, 1.0]])
 
-    # State Transition Matrix (F)
-    F = np.array([[1, dt, 0.5 * dt**2],
-                  [0,  1, dt],
-                  [0,  0,  1]])
+    # La varianza di processo (Q) scala con la velocità per assorbire meglio 
+    # le variazioni brusche del fondale ad alte velocità.
+    var_accel_process = 0.2 * max(1.0, v)
+    Q = np.array([[0.1, 0.0, 0.0],
+                  [0.0, var_accel_process * dt**2, var_accel_process * dt],
+                  [0.0, var_accel_process * dt, var_accel_process]])
 
-    # Process Noise (Q) - Tuning parameters
-    var_accel_process = 0.2
-    Q = np.array([[0.1, 0, 0],
-                  [0, var_accel_process * dt**2, var_accel_process * dt],
-                  [0, var_accel_process * dt, var_accel_process]])
+    R_spad = 0.05 ** 2   
+    R_accel = 0.015 ** 2 
 
-    # Measurement Noise Variances (R values)
-    R_spad = 0.05 ** 2   # Variance of SPAD noise
-    R_accel = 0.015 ** 2 # Variance of Accel noise
+    H_spad = np.array([[1.0, 0.0, 0.0]])
+    H_accel = np.array([[0.0, 0.0, 1.0]])
+    H_both = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
 
-    # --- 2. Run the Simulation ---
+    R_spad_mat = np.array([[R_spad]])
+    R_accel_mat = np.array([[R_accel]])
+    R_both_mat = np.array([[R_spad, 0.0], [0.0, R_accel]])
+    
+    I = np.eye(3)
+    res_z_history = np.zeros(total_ticks)
+
     for tick in range(total_ticks):
-        t = tick * dt
+        true_z = true_z_array[tick]
+        true_a = true_a_array[tick]
 
-        # ==========================================
-        # STEP A: SOURCE OF TRUTH
-        # ==========================================
-        true_z, true_a = get_true_reading(t, "DRONE_LANDING", offset, amplitude, omega)
-        t_history.append(t)
-        true_z_history.append(true_z)
-        true_a_history.append(true_a)
-
-        # ==========================================
-        # STEP B: EKF PREDICT STEP
-        # ==========================================
+        # --- PREDICT ---
         X = F @ X
         P = F @ P @ F.T + Q
 
-        # ==========================================
-        # STEP C: EKF UPDATE STEP (Sensor Fusion)
-        # ==========================================
+        # --- UPDATE ---
         has_spad = (tick % spad_interval == 0)
         has_accel = (tick % accel_interval == 0)
 
         if has_spad or has_accel:
-            H_rows = []
-            Z_rows = []
-            R_diag = []
+            if has_spad and has_accel:
+                # Misurazioni simulate (rumore aggiunto in-place per performance)
+                z_spad = true_z + np.random.normal(0.0, 0.05)
+                z_acc = true_a + np.random.normal(0.0, 0.015) + accel_bias
+                Z = np.array([[z_spad], [z_acc]])
+                
+                y = Z - (H_both @ X)
+                S = H_both @ P @ H_both.T + R_both_mat
+                K = P @ H_both.T @ np.linalg.inv(S) 
+                X = X + (K @ y)
+                P = (I - K @ H_both) @ P
 
-            if has_spad:
-                # SPAD measures Z (index 0)
-                H_rows.append([1.0, 0.0, 0.0])
-                spad_val = spad_measure(true_z, spad_params)
-                Z_rows.append([spad_val])
-                R_diag.append(R_spad)
+            elif has_spad:
+                z_spad = true_z + np.random.normal(0.0, 0.05)
+                Z = np.array([[z_spad]])
+                
+                y = Z - (H_spad @ X)
+                S = H_spad @ P @ H_spad.T + R_spad_mat
+                K = (P @ H_spad.T) / S[0, 0] 
+                X = X + (K @ y)
+                P = (I - K @ H_spad) @ P
 
-                spad_t_history.append(t)
-                spad_history.append(spad_val)
+            elif has_accel:
+                z_acc = true_a + np.random.normal(0.0, 0.015) + accel_bias
+                Z = np.array([[z_acc]])
+                
+                y = Z - (H_accel @ X)
+                S = H_accel @ P @ H_accel.T + R_accel_mat
+                K = (P @ H_accel.T) / S[0, 0] 
+                X = X + (K @ y)
+                P = (I - K @ H_accel) @ P
 
-            if has_accel:
-                # Accel measures A (index 2)
-                H_rows.append([0.0, 0.0, 1.0])
-                accel_val = get_acc_reading(true_a)
-                Z_rows.append([accel_val])
-                R_diag.append(R_accel)
+        res_z_history[tick] = X[0, 0]
 
-                accel_t_history.append(t)
-                accel_history.append(accel_val)
+    return res_z_history
 
-            # Convert to numpy arrays
-            H = np.array(H_rows)
-            Z = np.array(Z_rows)
-            R = np.diag(R_diag)
 
-            # Kalman Equations
-            y = Z - (H @ X)
-            S = H @ P @ H.T + R
-            K = P @ H.T @ np.linalg.inv(S)
-            X = X + (K @ y)
-            I = np.eye(3)
-            P = (I - K @ H) @ P
+# ==========================================
+# 4. CICLO PRINCIPALE DELLE SIMULAZIONI
+# ==========================================
+def main():
+    load_bathymetry_data('profilo_geometrico.csv')
 
-        # Store Estimated State for Plotting
-        measure_t_history.append(t)
-        res_z_history.append(X[0, 0])
-        res_v_history.append(X[1, 0])
-        res_a_history.append(X[2, 0])
+    v_vec = np.linspace(1.0, 20.0, 50) # Espanso a 50 velocità per testare la performance
+    distance = 10170.97
+    rmse = np.zeros(len(v_vec))
 
-    # --- 3. Generate Plots ---
-    print("Simulation complete. Generating plots...")
+    print("Inizio batch di simulazioni. Numba compilerà il codice al primo passaggio...")
 
-    # Create 3 subplots: SPAD Altitude, Accelerometer, and Final Result
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    for i in range(len(v_vec)):
+        v = v_vec[i]
+        sim_time = distance / v
+        total_ticks = int(sim_time * tick_hz)
+        
+        # Corretto n_spad a intero
+        n_spad = int(sim_time * SPAD_FREQ_HZ)
+        spad_interval = max(1, int(total_ticks / n_spad)) if n_spad > 0 else total_ticks
+        
+        # Il bias accelerometrico ora cambia ad ogni simulazione per maggiore realismo
+        accel_bias = np.random.normal(0, 0.03)
 
-    # Top Plot: Altitude (Truth vs SPAD)
-    ax1.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth')
-    ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=60, label='SPAD Measurements')
-    ax1.set_ylabel('Depth (m)')
-    ax1.set_title('Sensor: Sparse SPAD Altitude Measurements')
-    ax1.legend()
-    ax1.grid(True)
+        t_array = np.arange(total_ticks) * dt
+        s_array = v * t_array
+        true_z_array = interp_z(s_array)
 
-    # Middle Plot: Acceleration (Truth vs Accelerometer)
-    ax2.plot(t_history, true_a_history, 'k-', linewidth=2, label='True Acceleration')
-    ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.5, label='Accelerometer (BMI088)')
-    ax2.set_ylabel('Acceleration (m/s^2)')
-    ax2.set_title('Sensor: Noisy Accelerometer Readings')
-    ax2.legend()
-    ax2.grid(True)
+        # Derivate numeriche per velocità e accelerazione
+        true_vz_array = np.gradient(true_z_array, dt)
+        true_a_array_raw = np.gradient(true_vz_array, dt)
 
-    # Bottom Plot: The Kalman Filter Result
-    ax3.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth')
-    ax3.plot(measure_t_history, res_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF Estimated Depth')
-    ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel('Depth (m)')
-    ax3.set_title('Result: Kalman Filter Fusion (SPAD + Accel)')
-    ax3.legend()
-    ax3.grid(True)
+        # Filtraggio passa-basso scalato dinamicamente con la velocità
+        # Per v elevate, tau diminuisce in modo da rispondere più rapidamente ai cambi di gradiente
+        tau = 0.6 / max(1.0, v * 0.1) 
+        alpha = dt / (tau + dt)
+        
+        true_a_filtered = np.zeros(total_ticks)
+        true_a_filtered[0] = true_a_array_raw[0]
+        for k in range(1, total_ticks):
+            true_a_filtered[k] = alpha * true_a_array_raw[k] + (1 - alpha) * true_a_filtered[k-1]
 
+        true_a_array = true_a_filtered
+
+        # Esecuzione dell'EKF ottimizzato
+        res_z_history = run_ekf_numba(
+            total_ticks, 
+            true_z_array, 
+            true_a_array, 
+            dt, 
+            spad_interval, 
+            accel_interval, 
+            accel_bias,
+            v
+        )
+
+        # Calcolo RMSE
+        rmse_current_sim = np.sqrt(np.mean((true_z_array - res_z_history)**2))
+        rmse[i] = rmse_current_sim
+        
+        print(f"[{i+1}/{len(v_vec)}] v={v:5.1f} m/s | ticks={total_ticks:7d} | misure SPAD={n_spad:5d} | RMSE={rmse_current_sim:.3f} m")
+
+    # ==========================================
+    # 5. GENERAZIONE GRAFICI
+    # ==========================================
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(v_vec, rmse, 'b-o', linewidth=2)
+    ax.set_xlabel('Velocità drone (m/s)')
+    ax.set_ylabel('RMSE errore profondità (m)')
+    ax.set_title('Errore EKF vs. Velocità del Drone')
+    ax.grid(True)
     plt.tight_layout()
-    plt.savefig('low.png', dpi=150)
-    print("Plot saved to output.png")
-    os.startfile('low.png')  # Windows only
+    plt.show()
 
 if __name__ == "__main__":
     main()
