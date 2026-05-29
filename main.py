@@ -74,7 +74,7 @@ def main():
     load_bathymetry_data('profilo_geometrico.csv')
 
     #Inizializzazione vettori per confronto simulazioni
-    v_vec=np.linspace(1.0, 10.0, 10)
+    v_vec=np.linspace(1.0, 20, 1)
     distance=10170.97
     rmse = np.zeros(len(v_vec))
 
