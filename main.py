@@ -44,7 +44,8 @@ dt      = 1.0 / tick_hz
 GRAVITY = 9.81 # m/s^2
 C_LIGHT = 2.25e8 # speed of light in water [m/s]
 SPAD_FREQ_HZ = 0.7 #Hz
-ACCEL_FIXED_BIAS = np.random.normal(0, 0.03) # m/s^2
+#ACCEL_FIXED_BIAS = np.random.normal(0, 0.03) # m/s^2
+ACCEL_FIXED_BIAS=0.0002*9.81 # m/s^2, bias fisso per mantenere costante l'errore tra le simulazioni a diverse velocità
 
 
 #spad_interval = int(tick_hz/0.7)
@@ -62,7 +63,8 @@ SPAD_DEFAULT_PARAMS = dict(
 
 accel_interval = int(tick_hz/100)
 def get_acc_reading(true_a):
-    white_noise = np.random.normal(0, 0.015)
+   #white_noise = np.random.normal(0, 0.015)
+    white_noise=np.random.normal(0, 9.8*0.00016*np.sqrt(100))
     #ACCEL_FIXED_BIAS = np.random.normal(0, 0.2) spsostato fuori dal ciclo per mantenere costante il bias tra le simulazioni a diverse velocità
     return true_a + white_noise + ACCEL_FIXED_BIAS
 
@@ -235,56 +237,57 @@ def main():
             res_a_history[tick] = X[2, 0]
 
         # Calcolo RMSE per simulazione corrente
-        rmse_current_sim = np.sqrt(np.mean((true_z_array - res_z_history)**2))
+        rmse_current_sim = np.sqrt(np.mean((true_z_array - res_z_history)**2)) / np.sqrt(np.mean((true_z_array)**2))
         rmse[i]= rmse_current_sim
         
 
     # ==========================================
     # 4. GENERAZIONE GRAFICI UNICA SIMULAZIONE
     # ==========================================
-    # print("Simulazione completata. Generazione grafici...")
+    print("Simulazione completata. Generazione grafici...")
 
-    # #Calcolo errore assoluto
-    # z_error_history = true_z_array - res_z_history;
+    #Calcolo errore assoluto
+    z_error_history = true_z_array - res_z_history;
  
-    # fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 18), sharex=True)
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 18), sharex=True)
 
-    # ax1.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
-    # ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=10, label='SPAD Measurements', alpha=0.5)
-    # ax1.set_ylabel('Depth (m)')
-    # ax1.set_title('Sensore: SPAD Altitude (Interpolato da Batimetria)')
-    # ax1.legend()
-    # ax1.grid(True)
 
-    # ax2.plot(t_history, true_a_history, 'k-', linewidth=2, label='True Relative Acceleration')
-    # ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.3, label='Accelerometer Readings')
-    # ax2.set_ylabel('Acceleration (m/s^2)')
-    # ax2.set_title('Sensore: Accelerometro (Rumoroso)')
-    # ax2.legend()
-    # ax2.grid(True)
+    ax1.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
+    ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=10, label='SPAD Measurements', alpha=0.5)
+    ax1.set_ylabel('Depth (m)')
+    ax1.set_title('Sensore: SPAD Altitude (Interpolato da Batimetria)')
+    ax1.legend()
+    ax1.grid(True)
 
-    # ax3.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth')
-    # ax3.plot(t_history, res_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF Estimated Depth')
-    # ax3.set_xlabel('Time (s)')
-    # ax3.set_ylabel('Depth (m)')
-    # ax3.set_title('Risultato: Fusione EKF (SPAD + Accel) su Profilo Reale')
-    # ax3.legend()
-    # ax3.grid(True)
+    ax2.plot(t_history, true_a_history, 'k-', linewidth=2, label='True Relative Acceleration')
+    ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.3, label='Accelerometer Readings')
+    ax2.set_ylabel('Acceleration (m/s^2)')
+    ax2.set_title('Sensore: Accelerometro (Rumoroso)')
+    ax2.legend()
+    ax2.grid(True)
 
-    # ax4.plot(t_history, np.zeros(total_ticks), 'k-', linewidth=2)
-    # ax4.plot(t_history, z_error_history, 'r-', linewidth=2, label='Error')
-    # ax4.set_xlabel('Time (s)')
-    # ax4.set_ylabel('Depth (m)')
-    # ax4.set_title('Errore tra EKF e Profilo Reale')
-    # ax4.legend()
-    # ax4.grid(True)
+    ax3.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth')
+    ax3.plot(t_history, res_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF Estimated Depth')
+    ax3.set_xlabel('Time (s)')
+    ax3.set_ylabel('Depth (m)')
+    ax3.set_title('Risultato: Fusione EKF (SPAD + Accel) su Profilo Reale')
+    ax3.legend()
+    ax3.grid(True)
+
+    ax4.plot(t_history, np.zeros(total_ticks), 'k-', linewidth=2)
+    ax4.plot(t_history, z_error_history, 'r-', linewidth=2, label='Error')
+    ax4.set_xlabel('Time (s)')
+    ax4.set_ylabel('Depth (m)')
+    ax4.set_title('Errore tra EKF e Profilo Reale')
+    ax4.legend()
+    ax4.grid(True)
     
-    # fig.subplots_adjust(hspace=0.4, top=0.95, bottom=0.08, left=0.10, right=0.95)
-    # plt.show()
+    fig.subplots_adjust(hspace=0.4, top=0.95, bottom=0.08, left=0.10, right=0.95)
+    plt.show()
 
-    # ==========================================
-    # 4. GENERAZIONE GRAFICI CONFRONTO SIMULAZIONI
-    # ==========================================
+    # # ==========================================
+    # # 4. GENERAZIONE GRAFICI CONFRONTO SIMULAZIONI
+    # # ==========================================
     fig2, ax = plt.subplots(figsize=(9, 5))
     ax.plot(v_vec, rmse, 'b-o', linewidth=2)
     ax.set_xlabel('Velocità drone (m/s)')
