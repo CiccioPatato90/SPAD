@@ -68,6 +68,11 @@ def get_acc_reading(true_a):
     #ACCEL_FIXED_BIAS = np.random.normal(0, 0.2) spsostato fuori dal ciclo per mantenere costante il bias tra le simulazioni a diverse velocità
     return true_a + white_noise + ACCEL_FIXED_BIAS
 
+
+def moving_average(v, k):
+    return np.convolve(v, np.ones(k) / k, mode='valid')
+
+
 # ==========================================
 # 3. CICLO PRINCIPALE E FILTRO DI KALMAN (OTTIMIZZATO)
 # ==========================================
@@ -76,7 +81,7 @@ def main():
     load_bathymetry_data('profilo_geometrico.csv')
 
     #Inizializzazione vettori per confronto simulazioni
-    v_vec=np.linspace(1.0, 20, 1)
+    v_vec=np.linspace(3.0, 15.0, 1)
     distance=10170.97
     rmse = np.zeros(len(v_vec))
 
@@ -97,13 +102,13 @@ def main():
 
         t_array    = np.arange(total_ticks) * dt
 
-        # Posizione: interroga il profilo spaziale
-        s_array      = v * t_array                        # spazio percorso a ogni tick
-        true_z_array = interp_z(s_array)            # quota dal profilo geometrico
+       # Posizione spaziale sul percorso
+        s_array = v * t_array              
 
-        # Velocità e accelerazione verticale: derivate numeriche
-        true_vz_array = np.gradient(true_z_array, dt)     # dz/dt
-        true_a_array  = np.gradient(true_vz_array, dt)    # d²z/dt²
+        # 1. Calcoliamo la cinematica ASSOLUTA sulla mappa per ricavare le accelerazioni reali dei dossi
+        quota = interp_z(s_array)
+        true_vz_array = np.gradient(quota, dt)     
+        true_a_array  = np.gradient(true_vz_array, dt)
 
         # Filtraggio passa-basso (inerzia drone)
         tau   = 0.6
@@ -115,16 +120,13 @@ def main():
 
         true_a_array = true_a_filtered
 
-        # Configurazione iniziale basata sul primo valore del CSV
-        initial_z = float(interp_z(0))
+        # Forza true_z_array a essere la distanza relativa pancia-fondo (attorno al target di 3 metri)
+        true_z_array = 3.0 + (true_a_array * (tau**2))
+
+        # Configurazione iniziale basata sulla distanza relativa target (3 metri)
+        initial_z = 3.0  
         max_range = initial_z + 10.0
         spad_params = {**SPAD_DEFAULT_PARAMS, 'T_window': 2.0 * max_range / C_LIGHT}
-
-        # # --- PRE-CALCOLO VETTORIZZATO ---
-        # print("Pre-calcolo della traiettoria in corso...")
-        # t_array = np.arange(total_ticks) * dt
-        # true_z_array = interp_z(t_array)
-        # true_a_array = interp_a(t_array)
         
         true_z_history = true_z_array.tolist()
         true_a_history = true_a_array.tolist()
@@ -139,7 +141,7 @@ def main():
         res_a_history = np.zeros(total_ticks)
 
         # --- Inizializzazione Stato Filtro di Kalman ---
-        X = np.array([[initial_z], [0.0], [0.0]])
+        X = np.array([[initial_z], [0.0], [0.0]])  # Ora lo stato iniziale del filtro parte da 3.0
         P = np.eye(3) * 100.0
         F = np.array([[1, dt, 0.5 * dt**2], 
                     [0, 1, dt], 
@@ -172,6 +174,7 @@ def main():
             if tick % 10000 == 0 and tick > 0:
                 percentuale = (tick / total_ticks) * 100
                 print(f"Avanzamento: {tick} / {total_ticks} ({percentuale:.1f}%)")
+            
 
             t = t_array[tick]
             true_z = true_z_array[tick]
@@ -236,66 +239,86 @@ def main():
             res_v_history[tick] = X[1, 0]
             res_a_history[tick] = X[2, 0]
 
+        #Applico MA fliter
+        k=20
+
+        MA_z_history = moving_average(res_z_history, k)
+
         # Calcolo RMSE per simulazione corrente
-        rmse_current_sim = np.sqrt(np.mean((true_z_array - res_z_history)**2)) / np.sqrt(np.mean((true_z_array)**2))
+        true_z_tagliato = true_z_array[(k-1):]
+        rmse_current_sim = np.sqrt(np.mean((true_z_tagliato - MA_z_history)**2)) / np.sqrt(np.mean((true_z_tagliato)**2))
         rmse[i]= rmse_current_sim
         
 
     # ==========================================
     # 4. GENERAZIONE GRAFICI UNICA SIMULAZIONE
     # ==========================================
+    # ==========================================
+    # 4. GENERAZIONE GRAFICI UNICA SIMULAZIONE
+    # ==========================================
     print("Simulazione completata. Generazione grafici...")
 
-    #Calcolo errore assoluto
-    z_error_history = true_z_array - res_z_history;
+    # --- ALLINEAMENTO DELLE LUNGHEZZE PER MEDIA MOBILE  ---
+    t_history_ma = t_history[(k-1):]
+    true_z_history_ma = true_z_array[(k-1):]
+    true_a_history_ma = true_a_array[(k-1):]
+
+    # Ora il calcolo dell'errore ha array della stessa identica dimensione (2373224,)
+    z_error_history = true_z_history_ma - MA_z_history
  
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 18), sharex=True)
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 24), sharex=True) # Aumentata altezza a 22 per non far accavallare i testi
+    
+    # Condividi in automatico la scala verticale tra il plot del risultato e quello dell'errore
+    #ax4.sharey(ax3)
 
-
-    ax1.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
+    # AX1: SPAD (Usiamo i segnali interi perché scatter non ha problemi di shape)
+    ax1.plot(t_history, true_z_array, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
     ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=10, label='SPAD Measurements', alpha=0.5)
     ax1.set_ylabel('Depth (m)')
     ax1.set_title('Sensore: SPAD Altitude (Interpolato da Batimetria)')
     ax1.legend()
     ax1.grid(True)
 
-    ax2.plot(t_history, true_a_history, 'k-', linewidth=2, label='True Relative Acceleration')
+    # AX2: Accelerometro (Usiamo la cronologia allineata per l'accelerazione vera)
+    ax2.plot(t_history_ma, true_a_history_ma, 'k-', linewidth=2, label='True Relative Acceleration')
     ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.3, label='Accelerometer Readings')
     ax2.set_ylabel('Acceleration (m/s^2)')
     ax2.set_title('Sensore: Accelerometro (Rumoroso)')
     ax2.legend()
     ax2.grid(True)
 
-    ax3.plot(t_history, true_z_history, 'k-', linewidth=2, label='True Depth')
-    ax3.plot(t_history, res_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF Estimated Depth')
+    # AX3: Risultato di Fusione (Allineato)
+    ax3.plot(t_history_ma, true_z_history_ma, 'k-', linewidth=2, label='True Depth')
+    ax3.plot(t_history_ma, MA_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF + MA Estimated Depth')
     ax3.set_xlabel('Time (s)')
     ax3.set_ylabel('Depth (m)')
-    ax3.set_title('Risultato: Fusione EKF (SPAD + Accel) su Profilo Reale')
+    ax3.set_title(f'Risultato: Fusione EKF + Filtro MA (k={k}) su Profilo Reale') # Corretto con la f davanti alle virgolette
     ax3.legend()
     ax3.grid(True)
 
-    ax4.plot(t_history, np.zeros(total_ticks), 'k-', linewidth=2)
-    ax4.plot(t_history, z_error_history, 'r-', linewidth=2, label='Error')
+    # AX4: Errore Residuo (Allineato e con asse Y condiviso)
+    ax4.plot(t_history_ma, np.zeros(len(t_history_ma)), 'k-', linewidth=2)
+    ax4.plot(t_history_ma, z_error_history, 'r-', linewidth=2, label='Error')
     ax4.set_xlabel('Time (s)')
     ax4.set_ylabel('Depth (m)')
-    ax4.set_title('Errore tra EKF e Profilo Reale')
+    ax4.set_title('Errore tra EKF+MA e Profilo Reale')
     ax4.legend()
     ax4.grid(True)
-    
-    fig.subplots_adjust(hspace=0.4, top=0.95, bottom=0.08, left=0.10, right=0.95)
-    plt.show()
 
+    fig.subplots_adjust(hspace=0.5, left=0.10, right=0.95, top=0.95, bottom=0.05)
+    plt.show(block=True)
     # # ==========================================
     # # 4. GENERAZIONE GRAFICI CONFRONTO SIMULAZIONI
     # # ==========================================
-    fig2, ax = plt.subplots(figsize=(9, 5))
-    ax.plot(v_vec, rmse, 'b-o', linewidth=2)
-    ax.set_xlabel('Velocità drone (m/s)')
-    ax.set_ylabel('RMSE errore profondità (m)')
-    ax.set_title('Errore EKF vs. Velocità del Drone')
-    ax.grid(True)
+    # fig2, ax = plt.subplots(figsize=(9, 5))
+    # ax.plot(v_vec, rmse, 'b-o', linewidth=2)
+    # ax.set_xlabel('Velocità drone (m/s)')
+    # ax.set_ylabel('RMSE errore profondità (m)')
+    # ax.set_title('Errore EKF vs. Velocità del Drone')
+    # ax.grid(True)
     plt.tight_layout()
     plt.show()
+     
     plt.close('all')
 
 
