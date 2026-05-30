@@ -69,8 +69,12 @@ def get_acc_reading(true_a):
     return true_a + white_noise + ACCEL_FIXED_BIAS
 
 
-def moving_average(v, k):
-    return np.convolve(v, np.ones(k) / k, mode='valid')
+def bandpass_filter(signal, t, f_low, f_high):
+   sr = 1 / (t[1] - t[0])
+   spectrum = np.fft.rfft(signal)
+   freqs = np.fft.rfftfreq(len(signal), 1/sr)
+   spectrum[(freqs < f_low) | (freqs > f_high)] = 0
+   return np.fft.irfft(spectrum, len(signal))
 
 
 # ==========================================
@@ -81,7 +85,7 @@ def main():
     load_bathymetry_data('profilo_geometrico.csv')
 
     #Inizializzazione vettori per confronto simulazioni
-    v_vec=np.linspace(3.0, 15.0, 1)
+    v_vec=np.linspace(1.0, 500.0, 50)
     distance=10170.97
     rmse = np.zeros(len(v_vec))
 
@@ -239,88 +243,110 @@ def main():
             res_v_history[tick] = X[1, 0]
             res_a_history[tick] = X[2, 0]
 
-        #Applico MA fliter
-        k=20
+        # --- APPLICAZIONE FILTRO PASSA-BANDA  ---
+        f_low = 0.0   # Frequenza di taglio inferiore [Hz] (puoi cambiarla)
+        f_high = 5.0 # Frequenza di taglio superiore [Hz] (puoi cambiarla)
+        BP_z_history = bandpass_filter(res_z_history, t_array, f_low, f_high)
 
-        MA_z_history = moving_average(res_z_history, k)
-
-        # Calcolo RMSE per simulazione corrente
-        true_z_tagliato = true_z_array[(k-1):]
-        rmse_current_sim = np.sqrt(np.mean((true_z_tagliato - MA_z_history)**2)) / np.sqrt(np.mean((true_z_tagliato)**2))
-        rmse[i]= rmse_current_sim
+        # Calcolo RMSE 
+        rmse_current_sim = np.sqrt(np.mean((true_z_array - BP_z_history)**2)) / np.sqrt(np.mean((true_z_array)**2))
+        rmse[i] = rmse_current_sim
         
 
     # ==========================================
     # 4. GENERAZIONE GRAFICI UNICA SIMULAZIONE
     # ==========================================
-    # ==========================================
-    # 4. GENERAZIONE GRAFICI UNICA SIMULAZIONE
-    # ==========================================
-    print("Simulazione completata. Generazione grafici...")
+    # print("Simulazione completata. Generazione grafici...")
 
-    # --- ALLINEAMENTO DELLE LUNGHEZZE PER MEDIA MOBILE  ---
-    t_history_ma = t_history[(k-1):]
-    true_z_history_ma = true_z_array[(k-1):]
-    true_a_history_ma = true_a_array[(k-1):]
+   
 
-    # Ora il calcolo dell'errore ha array della stessa identica dimensione (2373224,)
-    z_error_history = true_z_history_ma - MA_z_history
+    # # Ora il calcolo dell'errore ha array della stessa identica dimensione (2373224,)
+    # z_error_history = true_z_array - BP_z_history
  
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 24), sharex=True) # Aumentata altezza a 22 per non far accavallare i testi
+    # fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 24), sharex=True) # Aumentata altezza a 22 per non far accavallare i testi
     
-    # Condividi in automatico la scala verticale tra il plot del risultato e quello dell'errore
-    #ax4.sharey(ax3)
+    # # Condividi in automatico la scala verticale tra il plot del risultato e quello dell'errore
+    # #ax4.sharey(ax3)
 
-    # AX1: SPAD (Usiamo i segnali interi perché scatter non ha problemi di shape)
-    ax1.plot(t_history, true_z_array, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
-    ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=10, label='SPAD Measurements', alpha=0.5)
-    ax1.set_ylabel('Depth (m)')
-    ax1.set_title('Sensore: SPAD Altitude (Interpolato da Batimetria)')
-    ax1.legend()
-    ax1.grid(True)
+    # #AX1: SPAD (Usiamo i segnali interi perché scatter non ha problemi di shape)
+    # ax1.plot(t_history, true_z_array, 'k-', linewidth=2, label='True Depth (Altitudine dal fondo)')
+    # ax1.scatter(spad_t_history, spad_history, color='red', marker='x', s=10, label='SPAD Measurements', alpha=0.5)
+    # ax1.set_ylabel('Depth (m)')
+    # ax1.set_title('Sensore: SPAD Altitude (Interpolato da Batimetria)')
+    # ax1.legend()
+    # ax1.grid(True)
 
-    # AX2: Accelerometro (Usiamo la cronologia allineata per l'accelerazione vera)
-    ax2.plot(t_history_ma, true_a_history_ma, 'k-', linewidth=2, label='True Relative Acceleration')
-    ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.3, label='Accelerometer Readings')
-    ax2.set_ylabel('Acceleration (m/s^2)')
-    ax2.set_title('Sensore: Accelerometro (Rumoroso)')
-    ax2.legend()
-    ax2.grid(True)
+    # # AX2: Accelerometro (Usiamo la cronologia allineata per l'accelerazione vera)
+    # ax2.plot(t_history, true_a_history, 'k-', linewidth=2, label='True Relative Acceleration')
+    # ax2.plot(accel_t_history, accel_history, 'g-', alpha=0.3, label='Accelerometer Readings')
+    # ax2.set_ylabel('Acceleration (m/s^2)')
+    # ax2.set_title('Sensore: Accelerometro (Rumoroso)')
+    # ax2.legend()
+    # ax2.grid(True)
 
-    # AX3: Risultato di Fusione (Allineato)
-    ax3.plot(t_history_ma, true_z_history_ma, 'k-', linewidth=2, label='True Depth')
-    ax3.plot(t_history_ma, MA_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF + MA Estimated Depth')
-    ax3.set_xlabel('Time (s)')
-    ax3.set_ylabel('Depth (m)')
-    ax3.set_title(f'Risultato: Fusione EKF + Filtro MA (k={k}) su Profilo Reale') # Corretto con la f davanti alle virgolette
-    ax3.legend()
-    ax3.grid(True)
+    # # AX3: Risultato di Fusione (Allineato)
+    # ax3.plot(t_history, true_z_array, 'k-', linewidth=2, label='True Depth')
+    # ax3.plot(t_history, BP_z_history, 'b-', linewidth=2, alpha=0.8, label='EKF + MA Estimated Depth')
+    # ax3.set_xlabel('Time (s)')
+    # ax3.set_ylabel('Depth (m)')
+    # ax3.set_title(f'Risultato: Fusione EKF + Filtro BP su Profilo Reale') # Corretto con la f davanti alle virgolette
+    # ax3.legend()
+    # ax3.grid(True)
 
-    # AX4: Errore Residuo (Allineato e con asse Y condiviso)
-    ax4.plot(t_history_ma, np.zeros(len(t_history_ma)), 'k-', linewidth=2)
-    ax4.plot(t_history_ma, z_error_history, 'r-', linewidth=2, label='Error')
-    ax4.set_xlabel('Time (s)')
-    ax4.set_ylabel('Depth (m)')
-    ax4.set_title('Errore tra EKF+MA e Profilo Reale')
-    ax4.legend()
-    ax4.grid(True)
+    # # AX4: Errore Residuo (Allineato e con asse Y condiviso)
+    # ax4.plot(t_history, np.zeros(len(t_history)), 'k-', linewidth=2)
+    # ax4.plot(t_history, z_error_history, 'r-', linewidth=2, label='Error')
+    # ax4.set_xlabel('Time (s)')
+    # ax4.set_ylabel('Depth (m)')
+    # ax4.set_title('Errore tra EKF+BP e Profilo Reale')
+    # ax4.legend()
+    # ax4.grid(True)
 
-    fig.subplots_adjust(hspace=0.5, left=0.10, right=0.95, top=0.95, bottom=0.05)
-    plt.show(block=True)
+    # fig.subplots_adjust(hspace=0.5, left=0.10, right=0.95, top=0.95, bottom=0.05)
+
+   # ==========================================
+    # ANALISI IN FREQUENZA CHIESTA DAL COLLEGA
+    # ==========================================
+    # from scipy.signal import welch, spectrogram
+
+    # # 1.  GRAFICO FFT 
+    # freqs, psd = welch(res_z_history, fs=tick_hz, nperseg=1024)
+
+    # fig_fft, ax_fft = plt.subplots(figsize=(10, 5))
+    # ax_fft.plot(freqs, psd, color='blue', linewidth=2)
+    # ax_fft.set_title("FFT dell'Output del Filtro di Kalman (Prima del MA)") 
+    # ax_fft.set_xlabel('Frequenza (Hz)')
+    # ax_fft.set_ylabel('Potenza dello spettro')
+    # ax_fft.grid(True, which='both')
+
+    # # 2.  GRAFICO SPETTROGRAMMA
+    # f_spec, t_spec, Sxx = spectrogram(res_z_history, fs=tick_hz, nperseg=256)
+
+    # fig_spec, ax_spec = plt.subplots(figsize=(10, 5))
+    # pcm = ax_spec.pcolormesh(t_spec, f_spec, 10 * np.log10(Sxx + 1e-10), shading='gouraud', cmap='jet')
+    # fig_spec.colorbar(pcm, ax=ax_spec, label='Intensità (dB)')
+    # ax_spec.set_title("Spettrogramma dell'Output del Filtro di Kalman (Prima del MA)") 
+    # ax_spec.set_xlabel('Tempo (s)')
+    # ax_spec.set_ylabel('Frequenza (Hz)')
+    # ax_spec.set_ylim([0, tick_hz / 2]) 
+
+    # fig.tight_layout(pad=3.0)
+    # plt.show(block=True)
+    
     # # ==========================================
     # # 4. GENERAZIONE GRAFICI CONFRONTO SIMULAZIONI
     # # ==========================================
-    # fig2, ax = plt.subplots(figsize=(9, 5))
-    # ax.plot(v_vec, rmse, 'b-o', linewidth=2)
-    # ax.set_xlabel('Velocità drone (m/s)')
-    # ax.set_ylabel('RMSE errore profondità (m)')
-    # ax.set_title('Errore EKF vs. Velocità del Drone')
-    # ax.grid(True)
+    
+    fig2, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(v_vec, rmse, 'b-o', linewidth=2)
+    ax.set_xlabel('Velocità drone (m/s)')
+    ax.set_ylabel('RMSE errore profondità (m)')
+    ax.set_title('Errore EKF vs. Velocità del Drone')
+    ax.grid(True)
     plt.tight_layout()
     plt.show()
      
     plt.close('all')
-
 
 # ==========================================
 # 5. ESECUZIONE SCRIPT
