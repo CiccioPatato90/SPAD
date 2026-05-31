@@ -314,9 +314,9 @@ def main():
 
     # fig_fft, ax_fft = plt.subplots(figsize=(10, 5))
     # ax_fft.plot(freqs, psd, color='blue', linewidth=2)
-    # ax_fft.set_title("FFT dell'Output del Filtro di Kalman (Prima del MA)") 
-    # ax_fft.set_xlabel('Frequenza (Hz)')
-    # ax_fft.set_ylabel('Potenza dello spettro')
+    # ax_fft.set_title("FFT of the Kalman Filter Output (Before MA)") 
+    # ax_fft.set_xlabel('Frequency (Hz)')
+    # ax_fft.set_ylabel('Spectrum Power')
     # ax_fft.grid(True, which='both')
 
     # # 2.  GRAFICO SPETTROGRAMMA
@@ -324,10 +324,10 @@ def main():
 
     # fig_spec, ax_spec = plt.subplots(figsize=(10, 5))
     # pcm = ax_spec.pcolormesh(t_spec, f_spec, 10 * np.log10(Sxx + 1e-10), shading='gouraud', cmap='jet')
-    # fig_spec.colorbar(pcm, ax=ax_spec, label='Intensità (dB)')
-    # ax_spec.set_title("Spettrogramma dell'Output del Filtro di Kalman (Prima del MA)") 
-    # ax_spec.set_xlabel('Tempo (s)')
-    # ax_spec.set_ylabel('Frequenza (Hz)')
+    # fig_spec.colorbar(pcm, ax=ax_spec, label='Intensity (dB)')
+    # ax_spec.set_title("Spectrogram of the Kalman Filter Output (Before MA)") 
+    # ax_spec.set_xlabel('Time (s)')
+    # ax_spec.set_ylabel('Frequency (Hz)')
     # ax_spec.set_ylim([0, tick_hz / 2]) 
 
     # fig.tight_layout(pad=3.0)
@@ -339,9 +339,9 @@ def main():
     
     fig2, ax = plt.subplots(figsize=(9, 5))
     ax.plot(v_vec, rmse, 'b-o', linewidth=2)
-    ax.set_xlabel('Velocità drone (m/s)')
-    ax.set_ylabel('RMSE errore profondità (m)')
-    ax.set_title('Errore EKF vs. Velocità del Drone')
+    ax.set_xlabel('Drone Speed (m/s)')
+    ax.set_ylabel('Depth error RMSE (m)')
+    ax.set_title('EKF Error vs. Drone Speed')
     ax.grid(True)
     plt.tight_layout()
     plt.show()
